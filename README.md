@@ -482,6 +482,7 @@ The blockchain is saved between runs, so run `rm -f data/chain.txt` before each 
 
 The diagram shows three things. First, how the registries are loaded at start-up and used to check every book ID and member ID before a block is made. Second, how each block points to the block before it through its `previous_hash`, starting from the genesis block. Third, what is inside one block. It also shows the steps of the lending flow (check IDs, check the book's history, build, sign, hash, add, save) and the three checks done when the chain is validated.
 
+<img width="800" height="600" alt="Untitled document" src="https://github.com/user-attachments/assets/59e3906c-1b5c-40ae-b65c-61e2a0d7d931" />
 
 
 ## 12. Limitations
