@@ -278,6 +278,18 @@ static int queue_block(LibraryState *state, const char *action, const Block *det
         return 0;
     }
 
+    /* A reward transaction ID must be unique, or validation would treat it as a replay. */
+    if (reward > 0) {
+        for (int i = 1; i < state->count + state->pending.count; i++) {
+            const Block *other = i < state->count ? &state->chain[i]
+                                                  : &state->pending.blocks[i - state->count];
+            if (strcmp(other->tx_id, block.tx_id) == 0) {
+                printf("ERROR: An identical reward transaction already exists. Try again in a second.\n");
+                return 0;
+            }
+        }
+    }
+
     if (!pending_add(&state->pending, &block)) {
         printf("ERROR: out of memory - block not queued.\n");
         return 0;

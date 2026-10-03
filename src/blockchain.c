@@ -261,6 +261,16 @@ int validate_chain(Block blockchain[], int count, EVP_PKEY *public_key,
         if (!verify_lending_block(block, public_key, &why)) {
             return invalid(i, why, bad_block, reason);
         }
+
+        /* A reward transaction may appear only once, so a signed block cannot be replayed. */
+        if (block->tx_id[0] != '\0') {
+            for (int j = 1; j < i; j++) {
+                if (strcmp(blockchain[j].tx_id, block->tx_id) == 0) {
+                    return invalid(i, "reward transaction ID was already used by an earlier block",
+                                   bad_block, reason);
+                }
+            }
+        }
     }
 
     return 1;
