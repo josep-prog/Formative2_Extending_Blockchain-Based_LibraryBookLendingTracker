@@ -385,6 +385,404 @@ static void usage(const char *program)
     printf("       %s --hash-pin <librarian_id> <pin>\n", program);
 }
 
+/* Menu handlers: one function per menu option. */
+
+/* What a menu option needs for the session. */
+typedef struct {
+    LibraryState *state;
+    Book *books;
+    int book_count;
+    Member *members;
+    int member_count;
+    const Librarian *user;       /* the logged-in librarian */
+    int is_admin;
+    EVP_PKEY *key_pair;          /* signs new lending blocks */
+    Transaction last_transfer;   /* kept for the replay test (option 11) */
+    int have_last_transfer;
+} Session;
+
+/* MENU_QUIT ends the menu loop: the user chose Exit or input was closed. */
+typedef enum { MENU_CONTINUE, MENU_QUIT } MenuStatus;
+
+/* Option 1: queue a signed BORROWED block. */
+static MenuStatus menu_borrow(Session *s)
+{
+    LibraryState *state = s->state;
+    char book_id[64], member_id[64];
+
+    if (!prompt_line("Book ID  : ", book_id, sizeof(book_id)) ||
+        !prompt_line("Member ID: ", member_id, sizeof(member_id))) {
+        return MENU_QUIT;
+    }
+
+    int book_index = find_book(s->books, s->book_count, book_id);
+    int member_index = find_member(s->members, s->member_count, member_id);
+
+    if (book_index == -1 || member_index == -1) {
+        printf("ERROR: Book or Member not found\n");
+        return MENU_CONTINUE;
+    }
+
+    if (find_active_borrow(state->chain, state->count, state->pending.blocks,
+                           state->pending.count, book_id) != NULL) {
+        printf("ERROR: This book is already on loan (confirmed or pending).\n");
+        return MENU_CONTINUE;
+    }
+
+    Block details = {0};
+    strcpy(details.book_id, s->books[book_index].book_id);
+    strcpy(details.book_title, s->books[book_index].title);
+    strcpy(details.member_id, s->members[member_index].member_id);
+    strcpy(details.member_name, s->members[member_index].full_name);
+
+    /* Borrowing earns nothing. */
+    if (queue_block(state, "BORROWED", &details, REWARD_NONE, s->user->librarian_id, s->key_pair)) {
+        printf("Borrow of '%s' for %s recorded.\n", details.book_title, details.member_name);
+    }
+    return MENU_CONTINUE;
+}
+
+/* Option 2: queue a RETURNED block carrying a 10-coin (on time) or 5-coin (late) reward. */
+static MenuStatus menu_return(Session *s)
+{
+    LibraryState *state = s->state;
+    char book_id[64], member_id[64];
+
+    if (!prompt_line("Book ID  : ", book_id, sizeof(book_id)) ||
+        !prompt_line("Member ID: ", member_id, sizeof(member_id))) {
+        return MENU_QUIT;
+    }
+
+    if (find_book(s->books, s->book_count, book_id) == -1 ||
+        find_member(s->members, s->member_count, member_id) == -1) {
+        printf("ERROR: Book or Member not found\n");
+        return MENU_CONTINUE;
+    }
+
+    const Block *loan = find_active_borrow(state->chain, state->count, state->pending.blocks,
+                                           state->pending.count, book_id);
+    if (loan == NULL) {
+        printf("ERROR: This book is not currently on loan.\n");
+        return MENU_CONTINUE;
+    }
+
+    /* Copy now: queue_block may move the block that loan points to. */
+    Block details = *loan;
+    if (strcmp(details.member_id, member_id) != 0) {
+        printf("ERROR: This book is on loan to %s (%s), not %s.\n",
+               details.member_name, details.member_id, member_id);
+        return MENU_CONTINUE;
+    }
+
+    /* Late = past the loan period, or already OVERDUE. */
+    const Block *latest = find_latest_record(state->chain, state->count, state->pending.blocks,
+                                             state->pending.count, book_id);
+    long held = (long)(time(NULL) - details.timestamp);
+    int late = held > loan_period_seconds() || strcmp(latest->action, "OVERDUE") == 0;
+    int reward = late ? REWARD_LATE : REWARD_ON_TIME;
+
+    printf("Returned %s after %ld second%s: %s.\n", late ? "LATE" : "ON TIME",
+           held, held == 1 ? "" : "s", late ? "5-coin reward" : "10-coin reward");
+
+    if (queue_block(state, "RETURNED", &details, reward, s->user->librarian_id, s->key_pair)) {
+        printf("Return of '%s' recorded.\n", details.book_title);
+    }
+    return MENU_CONTINUE;
+}
+
+/* Option 3: queue an OVERDUE block for every loan past the loan period. */
+static MenuStatus menu_mark_overdue(Session *s)
+{
+    LibraryState *state = s->state;
+    long period = loan_period_seconds();
+    time_t now = time(NULL);
+    int marked = 0;
+
+    for (int b = 0; b < s->book_count; b++) {
+        const Block *latest = find_latest_record(state->chain, state->count, state->pending.blocks,
+                                                 state->pending.count, s->books[b].book_id);
+        if (latest == NULL || strcmp(latest->action, "BORROWED") != 0 ||
+            now - latest->timestamp < period) {
+            continue;
+        }
+
+        /* Not returned yet, so no reward. */
+        Block details = *latest;
+        if (!queue_block(state, "OVERDUE", &details, REWARD_NONE, s->user->librarian_id, s->key_pair)) {
+            break;
+        }
+        printf("OVERDUE: '%s' borrowed by %s (%s) - no token transaction.\n",
+               details.book_title, details.member_name, details.member_id);
+        marked++;
+    }
+
+    printf("%d loan(s) marked overdue (loan period: %ld seconds).\n", marked, period);
+    return MENU_CONTINUE;
+}
+
+/* Option 4. */
+static MenuStatus menu_view_pending(Session *s)
+{
+    print_pending_pool(s->state);
+    return MENU_CONTINUE;
+}
+
+/* Option 5: the logged-in librarian mines the whole pool alone. */
+static MenuStatus menu_mine_solo(Session *s)
+{
+    mine_solo(s->state, s->user->librarian_id);
+    return MENU_CONTINUE;
+}
+
+/* Option 6: simulated miners share the work and the reward. */
+static MenuStatus menu_mine_pool(Session *s)
+{
+    int miners;
+    char prompt[64];
+
+    snprintf(prompt, sizeof(prompt), "Number of pool miners (%d-%d) [%d]: ",
+             MIN_POOL_MINERS, MAX_POOL_MINERS, DEFAULT_POOL_MINERS);
+    int ok = prompt_int(prompt, MIN_POOL_MINERS, MAX_POOL_MINERS, DEFAULT_POOL_MINERS, &miners);
+    if (ok < 0) return MENU_QUIT;
+    if (ok) mine_pool(s->state, miners);
+    return MENU_CONTINUE;
+}
+
+/* Option 7: an account rents mining power for 1-5 rounds. */
+static MenuStatus menu_mine_cloud(Session *s)
+{
+    LibraryState *state = s->state;
+    char renter[64], prompt[64];
+    int rounds, fee;
+
+    snprintf(prompt, sizeof(prompt), "Renter account [%s]: ", s->user->librarian_id);
+    if (!prompt_line(prompt, renter, sizeof(renter))) return MENU_QUIT;
+    if (renter[0] == '\0') strcpy(renter, s->user->librarian_id);
+    if (strlen(renter) >= ACCOUNT_ID_SIZE || !ledger_open_account(&state->ledger, renter)) {
+        printf("ERROR: invalid renter account.\n");
+        return MENU_CONTINUE;
+    }
+
+    int ok = prompt_int("Rental duration in rounds (1-5): ", 1, MAX_RENTAL_ROUNDS, 0, &rounds);
+    if (ok < 0) return MENU_QUIT;
+    if (!ok || rounds == 0) {
+        if (ok) printf("ERROR: Enter a whole number from 1 to %d.\n", MAX_RENTAL_ROUNDS);
+        return MENU_CONTINUE;
+    }
+
+    snprintf(prompt, sizeof(prompt), "Rental fee per round in coins [%d]: ", DEFAULT_RENTAL_FEE);
+    ok = prompt_int(prompt, 0, 10000, DEFAULT_RENTAL_FEE, &fee);
+    if (ok < 0) return MENU_QUIT;
+    if (ok) mine_cloud(state, renter, rounds, fee);
+    return MENU_CONTINUE;
+}
+
+/* Option 8: every confirmed block, with its signature check. */
+static MenuStatus menu_view_chain(Session *s)
+{
+    LibraryState *state = s->state;
+
+    printf("\nConfirmed chain (%d blocks):", state->count);
+    for (int i = 0; i < state->count; i++) {
+        print_block(&state->chain[i], state->public_key);
+    }
+    return MENU_CONTINUE;
+}
+
+/* Option 9. */
+static MenuStatus menu_view_balances(Session *s)
+{
+    Ledger *ledger = &s->state->ledger;
+
+    ledger_print_balances(ledger);
+    if (ledger->model == MODEL_UTXO) {
+        ledger_print_utxo_set(ledger);
+    }
+    return MENU_CONTINUE;
+}
+
+/* Option 10: manual transfer; the account model also asks for the sender's nonce. */
+static MenuStatus menu_transfer(Session *s)
+{
+    Ledger *ledger = &s->state->ledger;
+    char sender[64], recipient[64], amount_text[64], err[200];
+    long amount;
+    unsigned long nonce = 0;
+
+    if (!prompt_line("From account: ", sender, sizeof(sender)) ||
+        !prompt_line("To account  : ", recipient, sizeof(recipient)) ||
+        !prompt_line("Amount (coins, fee is 1 extra): ", amount_text, sizeof(amount_text))) {
+        return MENU_QUIT;
+    }
+    if (!parse_coins(amount_text, &amount)) {
+        printf("ERROR: Enter a positive amount such as 3 or 2.50.\n");
+        return MENU_CONTINUE;
+    }
+
+    if (ledger->model == MODEL_ACCOUNT) {
+        Account *account = ledger_find_account(ledger, sender);
+        char nonce_text[64], prompt[64];
+        snprintf(prompt, sizeof(prompt), "Nonce (next valid: %lu): ",
+                 account != NULL ? account->nonce : 0UL);
+        if (!prompt_line(prompt, nonce_text, sizeof(nonce_text))) return MENU_QUIT;
+
+        char *end;
+        nonce = strtoul(nonce_text, &end, 10);
+        if (end == nonce_text || *end != '\0' || nonce_text[0] == '-') {
+            printf("ERROR: The nonce must be a whole number.\n");
+            return MENU_CONTINUE;
+        }
+    }
+
+    Transaction tx;
+    if (!ledger_build_transfer(ledger, sender, recipient, amount, nonce, &tx, err, sizeof(err))) {
+        printf("REJECTED: %s.\n", err);
+        return MENU_CONTINUE;
+    }
+    ledger_print_transaction(&tx);
+
+    if (!ledger_submit(ledger, &tx, err, sizeof(err))) {
+        printf("REJECTED: %s.\n", err);
+        return MENU_CONTINUE;
+    }
+
+    char balance[32];
+    printf("ACCEPTED. %s now has %s, ", sender, format_coins(ledger_balance(ledger, sender), balance));
+    printf("%s now has %s.\n", recipient, format_coins(ledger_balance(ledger, recipient), balance));
+    if (ledger->model == MODEL_UTXO) {
+        ledger_print_utxo_set(ledger);
+    }
+    s->last_transfer = tx;
+    s->have_last_transfer = 1;
+    return MENU_CONTINUE;
+}
+
+/* Option 11: submit the last transfer again; it must be rejected. */
+static MenuStatus menu_replay_transfer(Session *s)
+{
+    char err[200];
+
+    if (!s->have_last_transfer) {
+        printf("Make a successful transfer (option 10) first.\n");
+        return MENU_CONTINUE;
+    }
+    printf("Re-submitting the exact same signed-off transaction:\n");
+    ledger_print_transaction(&s->last_transfer);
+    if (ledger_submit(&s->state->ledger, &s->last_transfer, err, sizeof(err))) {
+        printf("ACCEPTED (this should never happen).\n");
+    } else {
+        printf("REJECTED: %s.\n", err);
+    }
+    return MENU_CONTINUE;
+}
+
+/* Option 12: walk one account's linked-list history. */
+static MenuStatus menu_history(Session *s)
+{
+    char id[64];
+
+    if (!prompt_line("Account ID: ", id, sizeof(id))) return MENU_QUIT;
+    if (!ledger_print_history(&s->state->ledger, id)) {
+        printf("ERROR: No account '%s'.\n", id);
+    }
+    return MENU_CONTINUE;
+}
+
+/* Option 13: applies to blocks mined from now on. */
+static MenuStatus menu_set_difficulty(Session *s)
+{
+    LibraryState *state = s->state;
+    int new_difficulty;
+    char prompt[64];
+
+    snprintf(prompt, sizeof(prompt), "Difficulty (1-4) [%d]: ", state->difficulty);
+    int ok = prompt_int(prompt, MIN_DIFFICULTY, MAX_DIFFICULTY, state->difficulty, &new_difficulty);
+    if (ok < 0) return MENU_QUIT;
+    if (ok) {
+        state->difficulty = new_difficulty;
+        printf("New blocks must now start with %d zero%s.\n", new_difficulty,
+               new_difficulty == 1 ? "" : "s");
+    }
+    return MENU_CONTINUE;
+}
+
+/* Option 14. */
+static MenuStatus menu_benchmark(Session *s)
+{
+    (void)s;
+    mining_benchmark();
+    return MENU_CONTINUE;
+}
+
+/* Option 15. */
+static MenuStatus menu_validate(Session *s)
+{
+    report_validation(s->state->chain, s->state->count, s->state->public_key);
+    return MENU_CONTINUE;
+}
+
+/* Option 16: change a block in memory and show that validation catches it. */
+static MenuStatus menu_tamper_demo(Session *s)
+{
+    LibraryState *state = s->state;
+
+    if (!s->is_admin) {
+        printf("ERROR: Only an ADMIN can run the tamper-detection demo.\n");
+        return MENU_CONTINUE;
+    }
+    if (state->count < 2) {
+        printf("Mine at least one lending block first so there's a block to tamper with.\n");
+        return MENU_CONTINUE;
+    }
+
+    printf("Changing Block #1's book title in memory only, without re-hashing or re-signing.\n");
+    strcpy(state->chain[1].book_title, "TAMPERED TITLE");
+    report_validation(state->chain, state->count, state->public_key);
+    printf("(Restart the program to reload the clean chain from disk.)\n");
+    return MENU_CONTINUE;
+}
+
+/* Option 0: pending blocks are lost on exit, so ask first. */
+static MenuStatus menu_exit(Session *s)
+{
+    const PendingPool *pending = &s->state->pending;
+    char input[64];
+
+    if (pending->count > 0) {
+        printf("WARNING: %d unconfirmed block%s in the pending pool will be discarded.\n",
+               pending->count, pending->count == 1 ? "" : "s");
+        if (prompt_line("Exit anyway? (y/n): ", input, sizeof(input)) &&
+            strcmp(input, "y") != 0 && strcmp(input, "Y") != 0) {
+            return MENU_CONTINUE;
+        }
+    }
+    printf("Goodbye.\n");
+    return MENU_QUIT;
+}
+
+/* Indexed by the menu number the user types. */
+static MenuStatus (*const menu_handlers[])(Session *) = {
+    menu_exit,            /*  0 */
+    menu_borrow,          /*  1 */
+    menu_return,          /*  2 */
+    menu_mark_overdue,    /*  3 */
+    menu_view_pending,    /*  4 */
+    menu_mine_solo,       /*  5 */
+    menu_mine_pool,       /*  6 */
+    menu_mine_cloud,      /*  7 */
+    menu_view_chain,      /*  8 */
+    menu_view_balances,   /*  9 */
+    menu_transfer,        /* 10 */
+    menu_replay_transfer, /* 11 */
+    menu_history,         /* 12 */
+    menu_set_difficulty,  /* 13 */
+    menu_benchmark,       /* 14 */
+    menu_validate,        /* 15 */
+    menu_tamper_demo      /* 16 */
+};
+
+#define MENU_OPTION_COUNT ((int)(sizeof(menu_handlers) / sizeof(menu_handlers[0])))
+
 int main(int argc, char *argv[])
 {
     /* Helper to create librarians.txt entries. */
@@ -543,11 +941,19 @@ int main(int argc, char *argv[])
 
     srand((unsigned)time(NULL));
 
-    Transaction last_transfer;
-    int have_last_transfer = 0;
-    int choice = -1;
+    Session session = {0};
+    session.state = &state;
+    session.books = books;
+    session.book_count = book_count;
+    session.members = members;
+    session.member_count = member_count;
+    session.user = user;
+    session.is_admin = is_admin;
+    session.key_pair = key_pair;
 
-    do {
+    for (;;) {
+        int choice;
+
         print_menu(&state);
 
         if (!prompt_line("Choice: ", input, sizeof(input))) {
@@ -555,284 +961,15 @@ int main(int argc, char *argv[])
             break;
         }
 
-        if (!parse_int(input, 0, 16, &choice)) {
-            choice = -1;
+        if (!parse_int(input, 0, MENU_OPTION_COUNT - 1, &choice)) {
             printf("Invalid choice.\n");
             continue;
         }
 
-        if (choice == 1) {
-            char book_id[64], member_id[64];
-            if (!prompt_line("Book ID  : ", book_id, sizeof(book_id)) ||
-                !prompt_line("Member ID: ", member_id, sizeof(member_id))) {
-                break;
-            }
-
-            int book_index = find_book(books, book_count, book_id);
-            int member_index = find_member(members, member_count, member_id);
-
-            if (book_index == -1 || member_index == -1) {
-                printf("ERROR: Book or Member not found\n");
-                continue;
-            }
-
-            if (find_active_borrow(state.chain, state.count, state.pending.blocks,
-                                   state.pending.count, book_id) != NULL) {
-                printf("ERROR: This book is already on loan (confirmed or pending).\n");
-                continue;
-            }
-
-            Block details = {0};
-            strcpy(details.book_id, books[book_index].book_id);
-            strcpy(details.book_title, books[book_index].title);
-            strcpy(details.member_id, members[member_index].member_id);
-            strcpy(details.member_name, members[member_index].full_name);
-
-            /* Borrowing earns nothing. */
-            if (queue_block(&state, "BORROWED", &details, REWARD_NONE, user->librarian_id, key_pair)) {
-                printf("Borrow of '%s' for %s recorded.\n", details.book_title, details.member_name);
-            }
-
-        } else if (choice == 2) {
-            char book_id[64], member_id[64];
-            if (!prompt_line("Book ID  : ", book_id, sizeof(book_id)) ||
-                !prompt_line("Member ID: ", member_id, sizeof(member_id))) {
-                break;
-            }
-
-            if (find_book(books, book_count, book_id) == -1 ||
-                find_member(members, member_count, member_id) == -1) {
-                printf("ERROR: Book or Member not found\n");
-                continue;
-            }
-
-            const Block *loan = find_active_borrow(state.chain, state.count, state.pending.blocks,
-                                                   state.pending.count, book_id);
-            if (loan == NULL) {
-                printf("ERROR: This book is not currently on loan.\n");
-                continue;
-            }
-
-            /* Copy now: queue_block may move the block that loan points to. */
-            Block details = *loan;
-            if (strcmp(details.member_id, member_id) != 0) {
-                printf("ERROR: This book is on loan to %s (%s), not %s.\n",
-                       details.member_name, details.member_id, member_id);
-                continue;
-            }
-
-            /* Late = past the loan period, or already OVERDUE. */
-            const Block *latest = find_latest_record(state.chain, state.count, state.pending.blocks,
-                                                     state.pending.count, book_id);
-            long held = (long)(time(NULL) - details.timestamp);
-            int late = held > loan_period_seconds() || strcmp(latest->action, "OVERDUE") == 0;
-            int reward = late ? REWARD_LATE : REWARD_ON_TIME;
-
-            printf("Returned %s after %ld second%s: %s.\n", late ? "LATE" : "ON TIME",
-                   held, held == 1 ? "" : "s", late ? "5-coin reward" : "10-coin reward");
-
-            if (queue_block(&state, "RETURNED", &details, reward, user->librarian_id, key_pair)) {
-                printf("Return of '%s' recorded.\n", details.book_title);
-            }
-
-        } else if (choice == 3) {
-            long period = loan_period_seconds();
-            time_t now = time(NULL);
-            int marked = 0;
-
-            for (int b = 0; b < book_count; b++) {
-                const Block *latest = find_latest_record(state.chain, state.count, state.pending.blocks,
-                                                         state.pending.count, books[b].book_id);
-                if (latest == NULL || strcmp(latest->action, "BORROWED") != 0 ||
-                    now - latest->timestamp < period) {
-                    continue;
-                }
-
-                /* Not returned yet, so no reward. */
-                Block details = *latest;
-                if (!queue_block(&state, "OVERDUE", &details, REWARD_NONE, user->librarian_id, key_pair)) {
-                    break;
-                }
-                printf("OVERDUE: '%s' borrowed by %s (%s) - no token transaction.\n",
-                       details.book_title, details.member_name, details.member_id);
-                marked++;
-            }
-
-            printf("%d loan(s) marked overdue (loan period: %ld seconds).\n", marked, period);
-
-        } else if (choice == 4) {
-            print_pending_pool(&state);
-
-        } else if (choice == 5) {
-            mine_solo(&state, user->librarian_id);
-
-        } else if (choice == 6) {
-            int miners;
-            char prompt[64];
-            snprintf(prompt, sizeof(prompt), "Number of pool miners (%d-%d) [%d]: ",
-                     MIN_POOL_MINERS, MAX_POOL_MINERS, DEFAULT_POOL_MINERS);
-            int ok = prompt_int(prompt, MIN_POOL_MINERS, MAX_POOL_MINERS, DEFAULT_POOL_MINERS, &miners);
-            if (ok < 0) break;
-            if (ok) mine_pool(&state, miners);
-
-        } else if (choice == 7) {
-            char renter[64], prompt[64];
-            int rounds, fee;
-
-            snprintf(prompt, sizeof(prompt), "Renter account [%s]: ", user->librarian_id);
-            if (!prompt_line(prompt, renter, sizeof(renter))) break;
-            if (renter[0] == '\0') strcpy(renter, user->librarian_id);
-            if (strlen(renter) >= ACCOUNT_ID_SIZE || !ledger_open_account(&state.ledger, renter)) {
-                printf("ERROR: invalid renter account.\n");
-                continue;
-            }
-
-            int ok = prompt_int("Rental duration in rounds (1-5): ", 1, MAX_RENTAL_ROUNDS, 0, &rounds);
-            if (ok < 0) break;
-            if (!ok || rounds == 0) {
-                if (ok) printf("ERROR: Enter a whole number from 1 to %d.\n", MAX_RENTAL_ROUNDS);
-                continue;
-            }
-
-            snprintf(prompt, sizeof(prompt), "Rental fee per round in coins [%d]: ", DEFAULT_RENTAL_FEE);
-            ok = prompt_int(prompt, 0, 10000, DEFAULT_RENTAL_FEE, &fee);
-            if (ok < 0) break;
-            if (ok) mine_cloud(&state, renter, rounds, fee);
-
-        } else if (choice == 8) {
-            printf("\nConfirmed chain (%d blocks):", state.count);
-            for (int i = 0; i < state.count; i++) {
-                print_block(&state.chain[i], public_key);
-            }
-
-        } else if (choice == 9) {
-            ledger_print_balances(&state.ledger);
-            if (state.ledger.model == MODEL_UTXO) {
-                ledger_print_utxo_set(&state.ledger);
-            }
-
-        } else if (choice == 10) {
-            char sender[64], recipient[64], amount_text[64], err[200];
-            long amount;
-            unsigned long nonce = 0;
-
-            if (!prompt_line("From account: ", sender, sizeof(sender)) ||
-                !prompt_line("To account  : ", recipient, sizeof(recipient)) ||
-                !prompt_line("Amount (coins, fee is 1 extra): ", amount_text, sizeof(amount_text))) {
-                break;
-            }
-            if (!parse_coins(amount_text, &amount)) {
-                printf("ERROR: Enter a positive amount such as 3 or 2.50.\n");
-                continue;
-            }
-
-            if (state.ledger.model == MODEL_ACCOUNT) {
-                Account *account = ledger_find_account(&state.ledger, sender);
-                char nonce_text[64], prompt[64];
-                snprintf(prompt, sizeof(prompt), "Nonce (next valid: %lu): ",
-                         account != NULL ? account->nonce : 0UL);
-                if (!prompt_line(prompt, nonce_text, sizeof(nonce_text))) break;
-
-                char *end;
-                nonce = strtoul(nonce_text, &end, 10);
-                if (end == nonce_text || *end != '\0' || nonce_text[0] == '-') {
-                    printf("ERROR: The nonce must be a whole number.\n");
-                    continue;
-                }
-            }
-
-            Transaction tx;
-            if (!ledger_build_transfer(&state.ledger, sender, recipient, amount, nonce,
-                                       &tx, err, sizeof(err))) {
-                printf("REJECTED: %s.\n", err);
-                continue;
-            }
-            ledger_print_transaction(&tx);
-
-            if (!ledger_submit(&state.ledger, &tx, err, sizeof(err))) {
-                printf("REJECTED: %s.\n", err);
-                continue;
-            }
-
-            char balance[32];
-            printf("ACCEPTED. %s now has %s, ", sender,
-                   format_coins(ledger_balance(&state.ledger, sender), balance));
-            printf("%s now has %s.\n", recipient,
-                   format_coins(ledger_balance(&state.ledger, recipient), balance));
-            if (state.ledger.model == MODEL_UTXO) {
-                ledger_print_utxo_set(&state.ledger);
-            }
-            last_transfer = tx;
-            have_last_transfer = 1;
-
-        } else if (choice == 11) {
-            char err[200];
-            if (!have_last_transfer) {
-                printf("Make a successful transfer (option 10) first.\n");
-                continue;
-            }
-            printf("Re-submitting the exact same signed-off transaction:\n");
-            ledger_print_transaction(&last_transfer);
-            if (ledger_submit(&state.ledger, &last_transfer, err, sizeof(err))) {
-                printf("ACCEPTED (this should never happen).\n");
-            } else {
-                printf("REJECTED: %s.\n", err);
-            }
-
-        } else if (choice == 12) {
-            char id[64];
-            if (!prompt_line("Account ID: ", id, sizeof(id))) break;
-            if (!ledger_print_history(&state.ledger, id)) {
-                printf("ERROR: No account '%s'.\n", id);
-            }
-
-        } else if (choice == 13) {
-            int new_difficulty;
-            char prompt[64];
-            snprintf(prompt, sizeof(prompt), "Difficulty (1-4) [%d]: ", state.difficulty);
-            int ok = prompt_int(prompt, MIN_DIFFICULTY, MAX_DIFFICULTY, state.difficulty, &new_difficulty);
-            if (ok < 0) break;
-            if (ok) {
-                state.difficulty = new_difficulty;
-                printf("New blocks must now start with %d zero%s.\n", new_difficulty,
-                       new_difficulty == 1 ? "" : "s");
-            }
-
-        } else if (choice == 14) {
-            mining_benchmark();
-
-        } else if (choice == 15) {
-            report_validation(state.chain, state.count, public_key);
-
-        } else if (choice == 16) {
-            if (!is_admin) {
-                printf("ERROR: Only an ADMIN can run the tamper-detection demo.\n");
-                continue;
-            }
-            if (state.count < 2) {
-                printf("Mine at least one lending block first so there's a block to tamper with.\n");
-                continue;
-            }
-
-            printf("Changing Block #1's book title in memory only, without re-hashing or re-signing.\n");
-            strcpy(state.chain[1].book_title, "TAMPERED TITLE");
-            report_validation(state.chain, state.count, public_key);
-            printf("(Restart the program to reload the clean chain from disk.)\n");
-
-        } else if (choice == 0) {
-            if (state.pending.count > 0) {
-                printf("WARNING: %d unconfirmed block%s in the pending pool will be discarded.\n",
-                       state.pending.count, state.pending.count == 1 ? "" : "s");
-                if (prompt_line("Exit anyway? (y/n): ", input, sizeof(input)) &&
-                    strcmp(input, "y") != 0 && strcmp(input, "Y") != 0) {
-                    choice = -1;
-                    continue;
-                }
-            }
-            printf("Goodbye.\n");
+        if (menu_handlers[choice](&session) == MENU_QUIT) {
+            break;
         }
-
-    } while (choice != 0);
+    }
 
     exit_code = 0;
 

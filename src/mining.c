@@ -401,9 +401,13 @@ int mine_cloud(LibraryState *state, const char *renter_id, int rounds, long rent
     printf("%s balance is now %s coins\n", renter_id,
            format_coins(ledger_balance(&state->ledger, renter_id), d));
 
-    if (first_loss_round != 0) {
+    if (total_gross < total_fees) {
         printf("\nWARNING: this rental is UNPROFITABLE - cumulative fees exceeded cumulative "
                "rewards from round %d.\n", first_loss_round);
+    } else if (first_loss_round != 0) {
+        /* It was losing money at some round, but later blocks covered the fees. */
+        printf("\nWARNING: this rental was UNPROFITABLE at round %d - cumulative fees exceeded "
+               "cumulative rewards there, although it ended in profit.\n", first_loss_round);
     }
     return confirmed;
 }
