@@ -129,25 +129,25 @@ Set the passphrase once with `export LIBRARY_KEY_PASSPHRASE=demo-pass`, and run 
 
 ---
 
-## Formative 1 report
+## Formative 2 report
 
 The sections below are the original Formative 1 documentation. Where the build command, file list or menu differ, the Formative 2 section above is current.
 
-**DemoVideo**: _https://youtu.be/YUA85d7KCy0_
+**DemoVideo**: _https://youtu.be/cwhcAC3NmaE_
 | File Name | Link | Purpose of the file |
 | :---- | :---- | :---- |
-| DemoVideo formative | [**DemoVideo**](https://youtu.be/YUA85d7KCy0)  | complete explanation of the entire project , and complete guard on how to run it | 
-| Blockchain.c | [**blockchain.c**](https://github.com/josep-prog/formative_introduction_blockchain/blob/main/src/blockchain.c)  | I created this file to manage the blockchain. It creates the genesis, borrowing and returning blocks, links them using hashes, checks active loans, validates the blockchain (hashes, links and signatures), and saves and loads the chain file. |
-| Blockchain.h | [**blockchain.h**](https://github.com/josep-prog/formative_introduction_blockchain/blob/main/src/blockchain.h)  | I created this file to define the Block structure and declare the blockchain functions so that other files, especially main.c, can use them. |
-| Crypto.c | [**crypto.c**](https://github.com/josep-prog/formative_introduction_blockchain/blob/main/src/crypto.c)  | I created this file to handle the security part of the system. It generates keys, saves and loads the passphrase-encrypted key file, creates and verifies digital signatures, and hashes librarian PINs using OpenSSL. |
-| Crypto.h | [**crypto.h**](https://github.com/josep-prog/formative_introduction_blockchain/blob/main/src/crypto.h)  | I created this file to declare the cryptographic functions so that main.c and blockchain.c can use the security functions from crypto.c |
-| Main.c | [**main.c**](https://github.com/josep-prog/formative_introduction_blockchain/blob/main/src/main.c)  | I created this file to control the whole program. It handles the menu and calls the other files when the program needs to load records, create blockchain transactions, or perform security checks. |
-| Registry.h | [**registry.h**](https://github.com/josep-prog/formative_introduction_blockchain/blob/main/src/registry.h)   | I created this file to define the Book, Member and Librarian structures and declare the registry functions used by main.c. |
-| Registry.c | [**registry.c**](https://github.com/josep-prog/formative_introduction_blockchain/blob/main/src/registry.c)  | I created this file to load the books, members and librarians from the data files, report any bad lines, and find a record by ID. |
-| Books.txt | [**books.txt**](https://github.com/josep-prog/formative_introduction_blockchain/blob/main/data/books.txt)  | This file is for storing the registered books, including their IDs, titles, and authors. |
-| Members.txt | [**members.txt**](https://github.com/josep-prog/formative_introduction_blockchain/blob/main/data/members.txt)  | this file to store the registered library members and their basic information. |
-| Librarians.txt | [**librarians.txt**](https://github.com/josep-prog/formative_introduction_blockchain/blob/main/data/librarians.txt) | this file stores the staff who can log in: their ID, name, role (ADMIN or LIBRARIAN) and a PBKDF2 hash of their PIN. |
-| Makefile | [**Makefile**](https://github.com/josep-prog/formative_introduction_blockchain/blob/main/Makefile) | this file to make compiling the whole project easier by providing the commands needed to build the program and link OpenSSL. |
+| DemoVideo formative | [**DemoVideo**](https://youtu.be/cwhcAC3NmaE)  | complete explanation of the entire project , and complete guard on how to run it | 
+| Blockchain.c | [**blockchain.c**](https://github.com/josep-prog/Formative2_Extending_Blockchain-Based_LibraryBookLendingTracker/blob/main/src/blockchain.c)  | I created this file to manage the blockchain. It creates the genesis, borrowing and returning blocks, links them using hashes, checks active loans, validates the blockchain (hashes, links and signatures), and saves and loads the chain file. |
+| Blockchain.h | [**blockchain.h**](https://github.com/josep-prog/Formative2_Extending_Blockchain-Based_LibraryBookLendingTracker/blob/main/src/blockchain.h)  | I created this file to define the Block structure and declare the blockchain functions so that other files, especially main.c, can use them. |
+| Crypto.c | [**crypto.c**](https://github.com/josep-prog/Formative2_Extending_Blockchain-Based_LibraryBookLendingTracker/blob/main/src/crypto.c)  | I created this file to handle the security part of the system. It generates keys, saves and loads the passphrase-encrypted key file, creates and verifies digital signatures, and hashes librarian PINs using OpenSSL. |
+| Crypto.h | [**crypto.h**](https://github.com/josep-prog/Formative2_Extending_Blockchain-Based_LibraryBookLendingTracker/blob/main/src/crypto.h)  | I created this file to declare the cryptographic functions so that main.c and blockchain.c can use the security functions from crypto.c |
+| Main.c | [**main.c**](https://github.com/josep-prog/Formative2_Extending_Blockchain-Based_LibraryBookLendingTracker/blob/main/src/main.c)  | I created this file to control the whole program. It handles the menu and calls the other files when the program needs to load records, create blockchain transactions, or perform security checks. |
+| Registry.h | [**registry.h**](https://github.com/josep-prog/Formative2_Extending_Blockchain-Based_LibraryBookLendingTracker/blob/main/src/registry.h)   | I created this file to define the Book, Member and Librarian structures and declare the registry functions used by main.c. |
+| Registry.c | [**registry.c**](https://github.com/josep-prog/Formative2_Extending_Blockchain-Based_LibraryBookLendingTracker/blob/main/src/registry.c)  | I created this file to load the books, members and librarians from the data files, report any bad lines, and find a record by ID. |
+| Books.txt | [**books.txt**](https://github.com/josep-prog/Formative2_Extending_Blockchain-Based_LibraryBookLendingTracker/blob/main/data/books.txt)  | This file is for storing the registered books, including their IDs, titles, and authors. |
+| Members.txt | [**members.txt**](https://github.com/josep-prog/Formative2_Extending_Blockchain-Based_LibraryBookLendingTracker/blob/main/data/members.txt)  | this file to store the registered library members and their basic information. |
+| Librarians.txt | [**librarians.txt**](https://github.com/josep-prog/Formative2_Extending_Blockchain-Based_LibraryBookLendingTracker/blob/main/data/librarians.txt) | this file stores the staff who can log in: their ID, name, role (ADMIN or LIBRARIAN) and a PBKDF2 hash of their PIN. |
+| Makefile | [**Makefile**](https://github.com/josep-prog/Formative2_Extending_Blockchain-Based_LibraryBookLendingTracker/blob/main/Makefile) | this file to make compiling the whole project easier by providing the commands needed to build the program and link OpenSSL. |
 
 **Technical Report: Individual Assignment 1**
 **Student:** Joseph Nishimwe · African Leadership University
