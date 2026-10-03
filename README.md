@@ -482,52 +482,7 @@ The blockchain is saved between runs, so run `rm -f data/chain.txt` before each 
 
 The diagram shows three things. First, how the registries are loaded at start-up and used to check every book ID and member ID before a block is made. Second, how each block points to the block before it through its `previous_hash`, starting from the genesis block. Third, what is inside one block. It also shows the steps of the lending flow (check IDs, check the book's history, build, sign, hash, add, save) and the three checks done when the chain is validated.
 
-```mermaid
-flowchart TD
-    START(["Program starts"]) --> REG
 
-    subgraph REG["1. Registries loaded at start-up"]
-        direction LR
-        BK["books.txt<br/>book_id, title, author"]
-        MB["members.txt<br/>member_id, full_name, course_code"]
-        LB["librarians.txt<br/>librarian_id, name, role, PIN hash"]
-    end
-
-    REG --> KEY["Unlock signing key<br/>key.pem + passphrase<br/>check pub.pem matches"]
-    KEY --> LOAD["Load chain.txt<br/>or create the Genesis Block"]
-    LOAD --> LOGIN{"Librarian login<br/>ID and PIN correct?"}
-    LOGIN -- "No, after 3 tries" --> DENY(["Access denied"])
-    LOGIN -- "Yes" --> MENU["Menu<br/>Borrow, Return, View, Validate, Overdue, Tamper demo"]
-
-    MENU -- "Borrow or Return" --> ASK["Enter Book ID and Member ID"]
-    ASK --> CHECK{"Both IDs found<br/>in the registries?"}
-    CHECK -- "No" --> ERR1["ERROR: Book or Member not found<br/>nothing is added"]
-    CHECK -- "Yes" --> STATE{"Does the book's history<br/>on the chain allow it?"}
-    STATE -- "No" --> ERR2["ERROR: already on loan<br/>or not on loan"]
-    STATE -- "Yes" --> NEW["Build a new block<br/>copy book title and member name"]
-    NEW --> SIGN["Sign the block data<br/>ECDSA with the private key"]
-    SIGN --> HASH["SHA-256 hash of all fields<br/>and the signature"]
-    HASH --> APPEND["Add the block to the end of the chain"]
-    APPEND --> SAVE["Validate, then save to chain.txt"]
-
-    APPEND -.-> CHAIN
-    subgraph CHAIN["2. The blockchain: each block points to the one before it"]
-        direction LR
-        G["Block 0: GENESIS<br/>previous_hash = 64 zeros<br/>hash = H0"]
-        B1["Block 1: BORROWED<br/>previous_hash = H0<br/>hash = H1"]
-        B2["Block 2: RETURNED<br/>previous_hash = H1<br/>hash = H2"]
-        G --> B1 --> B2
-    end
-
-    B1 -.-> FIELDS
-    subgraph BLOCK["3. Inside one block"]
-        FIELDS["index, timestamp<br/>book_id, book_title<br/>member_id, member_name<br/>librarian_id, action<br/>previous_hash<br/>signature: ECDSA<br/>hash: SHA-256"]
-    end
-
-    MENU -- "Validate" --> VAL["Check every block<br/>1. recompute its hash<br/>2. compare previous_hash links<br/>3. verify signature with pub.pem"]
-    VAL --> OK(["VALID"])
-    VAL --> BAD(["INVALID: block number and reason"])
-```
 
 ## 12. Limitations
 
