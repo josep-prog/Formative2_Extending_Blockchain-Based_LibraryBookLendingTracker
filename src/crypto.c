@@ -120,12 +120,12 @@ int verify_signature(
 /* The key pair is stored as AES-256 encrypted PEM. */
 int save_key(EVP_PKEY *key_pair, const char *filename, const char *passphrase)
 {
-    /* Owner-only from the moment it is created. */
+    /* Owner-only from the start. */
     int fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) {
         return 0;
     }
-    fchmod(fd, 0600);   /* an older key file may have looser permissions */
+    fchmod(fd, 0600);   /* fix old permissions */
 
     FILE *file = fdopen(fd, "w");
     if (file == NULL) {
@@ -142,7 +142,7 @@ int save_key(EVP_PKEY *key_pair, const char *filename, const char *passphrase)
     return ok == 1;
 }
 
-/* OpenSSL only calls this for encrypted keys, so it also detects plaintext ones. */
+/* OpenSSL calls this only for encrypted keys. */
 struct passphrase_request {
     const char *passphrase;
     int asked;

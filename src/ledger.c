@@ -6,7 +6,7 @@
 #include "ledger.h"
 #include "crypto.h"
 
-/* ---------- small helpers ---------- */
+/* Helpers */
 
 const char *ledger_model_name(LedgerModel model)
 {
@@ -28,7 +28,7 @@ static void set_error(char *err, size_t err_size, const char *fmt, const char *a
     }
 }
 
-/* Grows a heap array so it can hold one more element. */
+/* Grows an array by one slot. */
 static int reserve_one(void **array, int count, int *capacity, size_t element_size)
 {
     if (count < *capacity) {
@@ -44,7 +44,7 @@ static int reserve_one(void **array, int count, int *capacity, size_t element_si
     return 1;
 }
 
-/* tx_id = SHA-256 over every field of the transaction except the id itself. */
+/* tx_id = SHA-256 of all other fields. */
 static void compute_tx_id(Transaction *tx)
 {
     char data[2048];
@@ -62,7 +62,7 @@ static void compute_tx_id(Transaction *tx)
     sha256_hex(data, (size_t)len, tx->tx_id);
 }
 
-/* ---------- lifecycle and accounts ---------- */
+/* Accounts */
 
 void ledger_init(Ledger *ledger, LedgerModel model)
 {
@@ -108,7 +108,7 @@ int ledger_open_account(Ledger *ledger, const char *id)
 
     Account *account = &ledger->accounts[ledger->account_count++];
     memset(account, 0, sizeof(*account));
-    strcpy(account->id, id);           /* every account starts at 0 tokens, nonce 0 */
+    strcpy(account->id, id);           /* starts at 0 tokens, nonce 0 */
     return 1;
 }
 
@@ -125,7 +125,7 @@ long ledger_balance(const Ledger *ledger, const char *id)
         return 0;
     }
 
-    /* UTXO model: a balance is never stored, it is the sum of unspent outputs. */
+    /* UTXO: balance = sum of unspent outputs. */
     for (int i = 0; i < ledger->utxo_count; i++) {
         if (strcmp(ledger->utxos[i].owner, id) == 0) {
             total += ledger->utxos[i].amount;
@@ -134,7 +134,7 @@ long ledger_balance(const Ledger *ledger, const char *id)
     return total;
 }
 
-/* Appends one entry to an account's linked-list history. */
+/* Adds one entry to the account history. */
 static int log_history(Ledger *ledger, const char *account_id, const Transaction *tx, int has_nonce)
 {
     Account *account = ledger_find_account(ledger, account_id);
@@ -164,7 +164,7 @@ static int log_history(Ledger *ledger, const char *account_id, const Transaction
     return 1;
 }
 
-/* The transaction appears in the history of everyone it touched. */
+/* Adds the transaction to the history of each account in it. */
 static void log_to_parties(Ledger *ledger, const Transaction *tx, int has_nonce)
 {
     if (strcmp(tx->sender, COINBASE_SENDER) != 0) {
@@ -179,7 +179,7 @@ static void log_to_parties(Ledger *ledger, const Transaction *tx, int has_nonce)
     }
 }
 
-/* ---------- UTXO set ---------- */
+/* UTXO */
 
 static int find_utxo(const Ledger *ledger, const char *tx_id, int output_index)
 {
@@ -206,13 +206,13 @@ static int add_utxo(Ledger *ledger, const char *tx_id, int output_index, const T
     return 1;
 }
 
-/* Spending an output removes it from the set, so it can never be spent again. */
+/* A spent output is removed, so it cannot be spent twice. */
 static void remove_utxo(Ledger *ledger, int position)
 {
     ledger->utxos[position] = ledger->utxos[--ledger->utxo_count];
 }
 
-/* ---------- minting (rewards) ---------- */
+/* Minting */
 
 int ledger_mint(Ledger *ledger, const char *tx_id, const char *recipient,
                 long gross, long fee, char *err, size_t err_size)
@@ -234,7 +234,7 @@ int ledger_mint(Ledger *ledger, const char *tx_id, const char *recipient,
     tx.fee = fee;
     tx.nonce = ledger->mint_sequence++;
 
-    /* Coinbase transactions have no inputs: the tokens are new. */
+    /* Coinbase has no inputs: the tokens are new. */
     strcpy(tx.outputs[0].owner, recipient);
     tx.outputs[0].amount = gross - fee;
     tx.output_count = 1;
@@ -270,7 +270,7 @@ int ledger_mint(Ledger *ledger, const char *tx_id, const char *recipient,
     return 1;
 }
 
-/* ---------- transfers ---------- */
+/* Transfers */
 
 int ledger_build_transfer(Ledger *ledger, const char *sender, const char *recipient,
                           long amount, unsigned long nonce, Transaction *tx,
@@ -303,7 +303,7 @@ int ledger_build_transfer(Ledger *ledger, const char *sender, const char *recipi
         return 1;
     }
 
-    /* UTXO: gather the sender's oldest outputs until they cover amount + fee. */
+    /* UTXO: take the oldest outputs until they cover amount + fee. */
     long needed = amount + TX_FEE;
     long gathered = 0;
 
@@ -336,7 +336,7 @@ int ledger_build_transfer(Ledger *ledger, const char *sender, const char *recipi
     tx->outputs[0].amount = amount;
     tx->output_count = 1;
 
-    if (gathered > needed) {           /* the excess comes back as a change output */
+    if (gathered > needed) {           /* change */
         strcpy(tx->outputs[1].owner, sender);
         tx->outputs[1].amount = gathered - needed;
         tx->output_count = 2;
@@ -362,7 +362,7 @@ static int submit_utxo(Ledger *ledger, const Transaction *tx, char *err, size_t 
     }
 
     for (int i = 0; i < tx->input_count; i++) {
-        /* The same output listed twice in one transaction is also a double spend. */
+        /* The same output twice is a double spend. */
         for (int j = 0; j < i; j++) {
             if (tx->inputs[j].output_index == tx->inputs[i].output_index &&
                 strcmp(tx->inputs[j].tx_id, tx->inputs[i].tx_id) == 0) {
@@ -407,7 +407,7 @@ static int submit_utxo(Ledger *ledger, const Transaction *tx, char *err, size_t 
         return 0;
     }
 
-    /* Valid: spend the inputs (highest position first, since removal swaps from the end). */
+    /* Spend the inputs, highest position first, because removal swaps from the end. */
     for (int pass = 0; pass < tx->input_count; pass++) {
         int highest = 0;
         for (int i = 1; i < tx->input_count; i++) {
@@ -500,7 +500,7 @@ long ledger_charge(Ledger *ledger, const char *payer, const char *payee, long am
         return paid;
     }
 
-    /* UTXO: spend the payer's outputs until the charge is covered (or they run out). */
+    /* UTXO: spend outputs until the charge is covered. */
     long gathered = 0;
     for (int i = 0; i < ledger->utxo_count && gathered < amount &&
                     tx.input_count < MAX_TX_INPUTS; i++) {
@@ -522,7 +522,7 @@ long ledger_charge(Ledger *ledger, const char *payer, const char *payee, long am
     strcpy(tx.outputs[0].owner, payee);
     tx.outputs[0].amount = paid;
     tx.output_count = 1;
-    if (gathered > paid) {             /* the excess comes back as a change output */
+    if (gathered > paid) {             /* change */
         strcpy(tx.outputs[1].owner, payer);
         tx.outputs[1].amount = gathered - paid;
         tx.output_count = 2;
@@ -538,7 +538,7 @@ int ledger_submit(Ledger *ledger, const Transaction *tx, char *err, size_t err_s
                                        : submit_account(ledger, tx, err, err_size);
 }
 
-/* ---------- printing ---------- */
+/* Printing */
 
 void ledger_print_balances(const Ledger *ledger)
 {

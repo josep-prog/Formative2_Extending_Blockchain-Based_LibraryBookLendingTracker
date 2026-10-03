@@ -7,12 +7,7 @@
 #include "crypto.h"
 
 
-/*
- * The signed part of a block: the lending event itself and its token reward.
- * index and previous_hash are NOT signed, because the block is signed when the
- * librarian records the event, before a miner decides where it goes on the chain.
- * They are protected by the block hash instead.
- */
+/* Signed part: the lending event and its reward; index and previous_hash are not signed. */
 void create_transaction_data(const Block *block, unsigned char *data, size_t *data_len)
 {
     *data_len = snprintf(
@@ -31,7 +26,7 @@ void create_transaction_data(const Block *block, unsigned char *data, size_t *da
     );
 }
 
-/* Header = everything the hash covers except the nonce, so mining only re-hashes the nonce. */
+/* Header = all hashed fields except the nonce. */
 static size_t build_hash_header(const Block *block, unsigned char *buf)
 {
     size_t len = snprintf((char *)buf, 128, "%d|%s|%d|", block->index, block->previous_hash,
@@ -111,7 +106,7 @@ void create_genesis_block(Block *block, int difficulty)
     mine_attempts(block, (unsigned long)-1, &attempts);
 }
 
-/* Deterministic, so validate_chain() can recompute it from the block's own fields. */
+/* The same input always gives the same id. */
 void compute_reward_tx_id(const Block *block, char out_hex[65])
 {
     char data[160];
@@ -179,7 +174,7 @@ static int is_lending_action(const char *action)
            strcmp(action, "OVERDUE") == 0;
 }
 
-/* Only a RETURNED block earns tokens, and its tx_id must match the reward it claims. */
+/* Only RETURNED earns tokens, and its tx_id must match the reward. */
 static const char *check_reward(const Block *block)
 {
     if (strcmp(block->action, "RETURNED") == 0) {
@@ -271,11 +266,7 @@ int validate_chain(Block blockchain[], int count, EVP_PKEY *public_key,
     return 1;
 }
 
-/*
- * One block per line:
- * index|timestamp|book_id|book_title|member_id|member_name|librarian_id|action|
- * token_reward|tx_id|previous_hash|signature_hex|difficulty|nonce|hash
- */
+/* One block per line, fields separated by '|'. */
 int save_chain(const char *filename, Block blockchain[], int count)
 {
     char temp_name[256];
@@ -305,7 +296,7 @@ int save_chain(const char *filename, Block blockchain[], int count)
         return 0;
     }
 
-    /* Temp file + rename, so a crash never leaves a half-written chain. */
+    /* Write a temp file, then rename, so a crash cannot break the chain file. */
     return rename(temp_name, filename) == 0;
 }
 
@@ -333,7 +324,7 @@ static int hex_value(char c)
     return -1;
 }
 
-/* Returns 1 if the line is well formed. */
+/* Returns 1 if the line is valid. */
 static int parse_block_line(char *line, Block *block)
 {
     char *cursor = line;
@@ -429,16 +420,13 @@ int load_chain(const char *filename, Block blockchain[])
     return count;
 }
 
-/*
- * Treats the chain followed by the pending pool as one history, newest last.
- * Position 0 is the genesis block, which never belongs to a book.
- */
+/* History = chain, then pending pool; position 0 is genesis. */
 static const Block *history_at(const Block chain[], int count, const Block pending[], int i)
 {
     return i < count ? &chain[i] : &pending[i - count];
 }
 
-/* The newest block (pending or confirmed) for this book, or NULL if it has none. */
+/* Newest block for this book, or NULL. */
 const Block *find_latest_record(const Block chain[], int count,
                                 const Block pending[], int pending_count, const char *book_id)
 {
@@ -451,7 +439,7 @@ const Block *find_latest_record(const Block chain[], int count,
     return NULL;
 }
 
-/* The BORROWED block of the book's current loan, or NULL if it is not on loan. */
+/* BORROWED block of the current loan, or NULL. */
 const Block *find_active_borrow(const Block chain[], int count,
                                 const Block pending[], int pending_count, const char *book_id)
 {
@@ -466,7 +454,7 @@ const Block *find_active_borrow(const Block chain[], int count,
         if (strcmp(block->action, "RETURNED") == 0) {
             return NULL;
         }
-        /* OVERDUE: still on loan, keep looking for the BORROWED block. */
+        /* OVERDUE: still on loan, keep looking. */
     }
     return NULL;
 }

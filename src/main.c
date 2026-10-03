@@ -24,7 +24,7 @@
 #define MAX_LOGIN_ATTEMPTS          3
 #define DEFAULT_LOAN_PERIOD_SECONDS 120
 
-/* Reads one line without its newline; returns 0 when input is closed. */
+/* Reads one line; returns 0 when input is closed. */
 static int read_line(char *buf, size_t size)
 {
     if (fgets(buf, (int)size, stdin) == NULL) {
@@ -47,7 +47,7 @@ static int prompt_line(const char *prompt, char *buf, size_t size)
     return read_line(buf, size);
 }
 
-/* Like prompt_line, but hides what is typed when reading from a terminal. */
+/* Like prompt_line, but hides the typing. */
 static int prompt_secret(const char *prompt, char *buf, size_t size)
 {
     struct termios old_attr, new_attr;
@@ -68,7 +68,7 @@ static int prompt_secret(const char *prompt, char *buf, size_t size)
     return ok;
 }
 
-/* Returns the librarian's index, or -1 after too many failed attempts. */
+/* Returns the librarian's index, or -1 after too many tries. */
 static int login(Librarian librarians[], int count)
 {
     char id[64], pin[64];
@@ -132,7 +132,7 @@ static EVP_PKEY *load_or_create_key(const char *passphrase)
         }
     }
 
-    /* New key, or an old unencrypted one: save it encrypted. */
+    /* New or unencrypted key: save it encrypted. */
     if (save_key(key_pair, KEY_FILE, passphrase)) {
         printf("Digital signing key %s and saved encrypted to %s.\n",
                status == KEY_MISSING ? "generated" : "loaded", KEY_FILE);
@@ -142,7 +142,7 @@ static EVP_PKEY *load_or_create_key(const char *passphrase)
     return key_pair;
 }
 
-/* Loads data/pub.pem, writing it from the signing key the first time. */
+/* Loads data/pub.pem, creating it the first time. */
 static EVP_PKEY *load_or_create_public_key(EVP_PKEY *key_pair)
 {
     EVP_PKEY *public_key = load_public_key(PUBLIC_KEY_FILE);
@@ -194,7 +194,7 @@ static int report_validation(Block blockchain[], int count, EVP_PKEY *public_key
     return 0;
 }
 
-/* Only a valid chain is written to disk, so the tamper demo can never end up in the file. */
+/* Only a valid chain is saved. */
 static void save_or_warn(LibraryState *state)
 {
     if (!validate_chain(state->chain, state->count, state->public_key, NULL, NULL)) {
@@ -218,7 +218,7 @@ static int parse_int(const char *text, int min, int max, int *out)
     return 1;
 }
 
-/* "12", "12.5" or "12.50" coins -> hundredths of a coin. Returns 1 on success. */
+/* "12" or "12.50" coins -> hundredths; returns 1 on success. */
 static int parse_coins(const char *text, long *out)
 {
     long whole = 0, cents = 0;
@@ -242,10 +242,7 @@ static int parse_coins(const char *text, long *out)
     return *out > 0;
 }
 
-/*
- * Asks for a number in [min, max]; an empty answer picks default_value.
- * Returns 1 on success, 0 on bad input, -1 when input is closed.
- */
+/* Asks for a number in [min, max], empty = default; returns 1 ok, 0 bad input, -1 input closed. */
 static int prompt_int(const char *prompt, int min, int max, int default_value, int *out)
 {
     char input[64];
@@ -263,7 +260,7 @@ static int prompt_int(const char *prompt, int min, int max, int default_value, i
     return 1;
 }
 
-/* Signs a lending event and parks it in the pending pool; the chain is untouched until mined. */
+/* Signs a lending event and adds it to the pending pool. */
 static int queue_block(LibraryState *state, const char *action, const Block *details,
                        int reward, const char *librarian_id, EVP_PKEY *key_pair)
 {
@@ -308,7 +305,7 @@ static int parse_model(const char *text, LedgerModel *model)
     return 0;
 }
 
-/* Members start at 0 tokens; balances are rebuilt from rewards already confirmed on the chain. */
+/* Balances are rebuilt from rewards on the chain. */
 static int setup_ledger(LibraryState *state, Member members[], int member_count)
 {
     int replayed = 0;
@@ -322,7 +319,7 @@ static int setup_ledger(LibraryState *state, Member members[], int member_count)
         return 0;
     }
 
-    /* A chain that fails validation proves nothing, so none of its rewards are credited. */
+    /* An invalid chain gives no rewards. */
     if (!validate_chain(state->chain, state->count, state->public_key, NULL, NULL)) {
         printf("WARNING: the chain is INVALID, so no rewards were credited from it. "
                "All balances start at 0.\n");
@@ -378,7 +375,7 @@ static void usage(const char *program)
 
 int main(int argc, char *argv[])
 {
-    /* Helper for creating librarians.txt entries. */
+    /* Helper to create librarians.txt entries. */
     if (argc == 4 && strcmp(argv[1], "--hash-pin") == 0) {
         char hex[65];
         if (!hash_pin(argv[2], argv[3], hex)) {
@@ -389,7 +386,7 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    /* Checks data/chain.txt with only the public key - no passphrase or login needed. */
+    /* Checks data/chain.txt with only the public key. */
     if (argc == 2 && strcmp(argv[1], "--verify") == 0) {
         EVP_PKEY *public_key = load_public_key(PUBLIC_KEY_FILE);
         if (public_key == NULL) {
@@ -419,7 +416,7 @@ int main(int argc, char *argv[])
         return valid ? 0 : 1;
     }
 
-    /* Session options: transaction model and mining difficulty. */
+    /* Session options. */
     int model_chosen = 0;
     LedgerModel model = MODEL_UTXO;
     int difficulty = DEFAULT_DIFFICULTY;
@@ -514,7 +511,7 @@ int main(int argc, char *argv[])
 
     char input[64];
 
-    /* The model is fixed for the whole session, so every token transaction uses the same rules. */
+    /* One model for the whole session. */
     while (!model_chosen) {
         printf("\nChoose the transaction model for this session:\n");
         printf("1. UTXO model\n2. Account-based model\n");
@@ -579,7 +576,7 @@ int main(int argc, char *argv[])
             strcpy(details.member_id, members[member_index].member_id);
             strcpy(details.member_name, members[member_index].full_name);
 
-            /* Borrowing earns nothing, so no transaction is created. */
+            /* Borrowing earns nothing. */
             if (queue_block(&state, "BORROWED", &details, REWARD_NONE, user->librarian_id, key_pair)) {
                 printf("Borrow of '%s' for %s recorded.\n", details.book_title, details.member_name);
             }
@@ -604,7 +601,7 @@ int main(int argc, char *argv[])
                 continue;
             }
 
-            /* Copy now: queue_block may grow the pending pool and move the block loan points to. */
+            /* Copy now: queue_block may move the block that loan points to. */
             Block details = *loan;
             if (strcmp(details.member_id, member_id) != 0) {
                 printf("ERROR: This book is on loan to %s (%s), not %s.\n",
@@ -612,7 +609,7 @@ int main(int argc, char *argv[])
                 continue;
             }
 
-            /* Late = past the loan period, or already flagged OVERDUE. */
+            /* Late = past the loan period, or already OVERDUE. */
             const Block *latest = find_latest_record(state.chain, state.count, state.pending.blocks,
                                                      state.pending.count, book_id);
             long held = (long)(time(NULL) - details.timestamp);
@@ -639,7 +636,7 @@ int main(int argc, char *argv[])
                     continue;
                 }
 
-                /* Not returned yet, so no reward transaction - just a record of the overdue loan. */
+                /* Not returned yet, so no reward. */
                 Block details = *latest;
                 if (!queue_block(&state, "OVERDUE", &details, REWARD_NONE, user->librarian_id, key_pair)) {
                     break;

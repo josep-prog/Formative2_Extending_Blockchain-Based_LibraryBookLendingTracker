@@ -3,12 +3,9 @@
 
 #include "blockchain.h"
 
-/*
- * Signed lending blocks waiting for a miner. Borrow, return and overdue actions
- * land here first; nothing reaches the chain (or changes a balance) until mined.
- */
+/* Signed blocks waiting for a miner; nothing changes until they are mined. */
 typedef struct {
-    Block *blocks;   /* heap array, grows as needed */
+    Block *blocks;   /* heap array */
     int count;
     int capacity;
 } PendingPool;
@@ -16,10 +13,10 @@ typedef struct {
 void pending_init(PendingPool *pool);
 void pending_free(PendingPool *pool);
 
-/* Copies the block in; returns 0 if memory ran out. */
+/* Returns 0 if memory ran out. */
 int pending_add(PendingPool *pool, const Block *block);
 
-/* Removes the first n blocks (the ones just mined), keeping the order of the rest. */
+/* Removes the first n blocks. */
 void pending_remove_front(PendingPool *pool, int n);
 
 #endif

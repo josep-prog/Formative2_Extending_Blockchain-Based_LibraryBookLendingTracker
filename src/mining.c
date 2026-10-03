@@ -10,8 +10,8 @@
 
 typedef struct {
     char id[ACCOUNT_ID_SIZE];
-    unsigned long hash_rate;      /* attempts this miner makes per round */
-    unsigned long attempts;       /* total attempts across every block */
+    unsigned long hash_rate;      /* attempts per round */
+    unsigned long attempts;       /* total attempts */
     int blocks_found;
     long reward;                  /* hundredths of a coin */
 } PoolMiner;
@@ -26,7 +26,7 @@ int apply_block_reward(Ledger *ledger, const Block *block)
     char err[160];
 
     if (block->token_reward <= 0) {
-        return 1;                 /* borrows and unreturned (OVERDUE) loans create no transaction */
+        return 1;                 /* no reward, no transaction */
     }
     if (!ledger_mint(ledger, block->tx_id, block->member_id,
                      block->token_reward * COIN, TX_FEE, err, sizeof(err))) {
@@ -58,11 +58,7 @@ static void print_after_confirmation(LibraryState *state, const Block *block)
     }
 }
 
-/*
- * Takes the oldest pending block, rejects it if its signature or reward is bad,
- * and links it to the tip of the chain at the current difficulty.
- * Returns 0 when there is nothing (valid) left to mine.
- */
+/* Prepares the oldest valid pending block; returns 0 if none is left. */
 static int next_candidate(LibraryState *state, Block *candidate)
 {
     while (state->pending.count > 0) {
@@ -85,7 +81,7 @@ static int next_candidate(LibraryState *state, Block *candidate)
     return 0;
 }
 
-/* Appends a freshly mined block, saves the chain and applies its reward. */
+/* Adds a mined block, saves the chain and pays its reward. */
 static int confirm_block(LibraryState *state, const Block *mined)
 {
     state->chain[state->count++] = *mined;
@@ -125,7 +121,7 @@ void print_pending_pool(const LibraryState *state)
     }
 }
 
-/* ---------- 4.1 Solo mining ---------- */
+/* Solo mining */
 
 int mine_solo(LibraryState *state, const char *miner_id)
 {
@@ -146,7 +142,7 @@ int mine_solo(LibraryState *state, const char *miner_id)
         unsigned long attempts;
         clock_t start = clock();
 
-        /* Proof of work: bump the nonce and re-hash until the target is met. */
+        /* Proof of work: change the nonce until the hash is valid. */
         mine_attempts(&block, ALL_ATTEMPTS, &attempts);
 
         printf("\nMined block #%d after %lu hash attempts (nonce %lu, %.1f ms)\n",
@@ -175,7 +171,7 @@ int mine_solo(LibraryState *state, const char *miner_id)
     return confirmed;
 }
 
-/* ---------- 4.2 Pool mining ---------- */
+/* Pool mining */
 
 int mine_pool(LibraryState *state, int miner_count)
 {
@@ -208,12 +204,7 @@ int mine_pool(LibraryState *state, int miner_count)
         unsigned long next_nonce = 0;
         Block winning = block;
 
-        /*
-         * A round is one unit of time in which all miners hash in parallel, each on
-         * its own nonce range so no work is duplicated. Miner m makes its k-th attempt
-         * at time k / hash_rate, so the winner is whoever hits the target EARLIEST,
-         * and everyone else is credited only with the attempts made before that moment.
-         */
+        /* All miners hash at the same time on different nonces; the earliest valid hash wins. */
         while (finder == -1) {
             unsigned long used[MAX_POOL_MINERS];
             double win_time = 2.0;     /* later than any attempt in this round */
@@ -262,14 +253,14 @@ int mine_pool(LibraryState *state, int miner_count)
     long paid = 0;
     int top = 0;
 
-    /* share = (miner_attempts / total_attempts) * reward, rounded down to 0.01 coin */
+    /* share = attempts / total attempts * reward, rounded down */
     for (int m = 0; m < miner_count; m++) {
         miners[m].reward = (long)((long long)distributable * (long long)miners[m].attempts /
                                   (long long)total_attempts);
         paid += miners[m].reward;
         if (miners[m].attempts > miners[top].attempts) top = m;
     }
-    miners[top].reward += distributable - paid;   /* rounding remainder to the biggest contributor */
+    miners[top].reward += distributable - paid;   /* remainder goes to the top miner */
 
     ledger_mint(&state->ledger, NULL, POOL_OPERATOR_ACCOUNT, pool_fee, 0, err, sizeof(err));
     for (int m = 0; m < miner_count; m++) {
@@ -304,17 +295,17 @@ int mine_pool(LibraryState *state, int miner_count)
     return confirmed;
 }
 
-/* ---------- 4.3 Cloud mining ---------- */
+/* Cloud mining */
 
 int mine_cloud(LibraryState *state, const char *renter_id, int rounds, long rental_fee_coins)
 {
     Block block;
-    int have_block = 0;            /* a block whose proof of work is still in progress */
+    int have_block = 0;            /* block still being mined */
     int confirmed = 0;
     int first_loss_round = 0;
     long rental_fee = rental_fee_coins * COIN;
     long total_gross = 0, total_rental = 0, total_maintenance = 0;
-    long rental_paid = 0;          /* what the renter's balance could actually cover */
+    long rental_paid = 0;          /* what the renter could pay */
     char a[32], b[32], c[32], d[32], e[32];
 
     printf("\n=== CLOUD MINING: %s rents %lu hashes/round for %d round%s at %s coins/round ===\n",
@@ -331,7 +322,7 @@ int mine_cloud(LibraryState *state, const char *renter_id, int rounds, long rent
         unsigned long budget = CLOUD_HASHES_PER_ROUND;
         round_blocks[r] = 0;
 
-        /* The rented rig works through pending blocks until this round's hashes run out. */
+        /* The rig mines pending blocks until this round's hashes run out. */
         while (budget > 0) {
             if (!have_block) {
                 if (!next_candidate(state, &block)) break;
@@ -353,14 +344,14 @@ int mine_cloud(LibraryState *state, const char *renter_id, int rounds, long rent
         round_gross[r] = (long)round_blocks[r] * BLOCK_REWARD * COIN;
         round_maint[r] = round_gross[r] * CLOUD_MAINTENANCE_PCT / 100;
 
-        /* Rewards are credited round by round, minus the provider's maintenance cut. */
+        /* Pay the round's rewards, minus the provider's cut. */
         if (round_gross[r] - round_maint[r] > 0) {
             char err[160];
             ledger_mint(&state->ledger, NULL, renter_id, round_gross[r] - round_maint[r], 0,
                         err, sizeof(err));
         }
 
-        /* The round's rental fee is then deducted from the renter and paid to the provider. */
+        /* Then the renter pays the rental fee. */
         rental_paid += ledger_charge(&state->ledger, renter_id, CLOUD_PROVIDER_ACCOUNT, rental_fee);
     }
 
@@ -417,7 +408,7 @@ int mine_cloud(LibraryState *state, const char *renter_id, int rounds, long rent
     return confirmed;
 }
 
-/* ---------- difficulty benchmark ---------- */
+/* Benchmark */
 
 void mining_benchmark(void)
 {

@@ -3,11 +3,11 @@
 #include <ctype.h>
 #include "registry.h"
 
-/* Registry files are comma-separated, one record per line; bad lines are reported and skipped. */
+/* One record per line, comma-separated; bad lines are skipped. */
 
 #define LINE_SIZE 512
 
-/* Strips surrounding whitespace, including a Windows '\r'. */
+/* Removes spaces and '\r' at both ends. */
 static char *trim(char *text)
 {
     while (isspace((unsigned char)*text)) {
@@ -23,7 +23,7 @@ static char *trim(char *text)
     return text;
 }
 
-/* Splits the next valid line into field_count fields; returns 0 at end of file. */
+/* Splits the next good line into fields; returns 0 at end of file. */
 static int next_record(FILE *file, const char *filename, int *line_no,
                        char line[LINE_SIZE], char *fields[], int field_count)
 {
@@ -226,7 +226,7 @@ int load_librarians(const char *filename, Librarian librarians[])
 int find_book(Book books[], int count, const char *book_id)
 {
     for (int i = 0; i < count; i++) {
-        /* Exact match, so "BK001EXTRA" is not "BK001". */
+        /* Exact match only. */
         if (strcmp(books[i].book_id, book_id) == 0) {
             return i;
         }

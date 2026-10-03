@@ -3,28 +3,21 @@
 
 #include <stddef.h>
 
-/*
- * Member token balances under one of two models, chosen once per session:
- *   UTXO    - balances are the sum of unspent transaction outputs a member owns
- *   ACCOUNT - each member has a stored balance and a nonce
- *
- * Amounts are kept in hundredths of a coin (COIN = 100), so pool shares and the
- * 2% pool fee stay exact without floating point.
- */
+/* Token balances in UTXO or ACCOUNT model; amounts are in hundredths of a coin. */
 
 typedef enum { MODEL_UTXO, MODEL_ACCOUNT } LedgerModel;
 
 #define COIN            100L
-#define TX_FEE          (1 * COIN)     /* fixed fee on every reward and transfer */
-#define FEE_ACCOUNT     "LIBRARY"      /* the library treasury collects all fees */
-#define COINBASE_SENDER "COINBASE"     /* sender of newly created tokens          */
+#define TX_FEE          (1 * COIN)     /* fee on every reward and transfer */
+#define FEE_ACCOUNT     "LIBRARY"      /* collects all fees */
+#define COINBASE_SENDER "COINBASE"     /* sender of new tokens */
 
 #define ACCOUNT_ID_SIZE 20
 #define MAX_TX_INPUTS   32
 #define MAX_TX_OUTPUTS  3              /* recipient, change, fee */
 
 typedef struct {
-    char tx_id[65];       /* transaction that created the output being spent */
+    char tx_id[65];       /* transaction that made the output */
     int output_index;
 } TxInput;
 
@@ -34,10 +27,10 @@ typedef struct {
 } TxOutput;
 
 typedef struct {
-    char tx_id[65];                    /* SHA-256 of every field below */
+    char tx_id[65];                    /* SHA-256 of the fields below */
     char sender[ACCOUNT_ID_SIZE];
     char recipient[ACCOUNT_ID_SIZE];
-    long amount;                       /* what the recipient receives */
+    long amount;                       /* what the recipient gets */
     long fee;
     unsigned long nonce;               /* account model only */
 
@@ -55,7 +48,7 @@ typedef struct {
     long amount;
 } Utxo;
 
-/* Per-account transaction history, kept as a singly linked list. */
+/* Account history, a linked list. */
 typedef struct HistoryNode {
     char tx_id[65];
     char sender[ACCOUNT_ID_SIZE];
@@ -70,7 +63,7 @@ typedef struct HistoryNode {
 typedef struct {
     char id[ACCOUNT_ID_SIZE];
     long balance;                      /* account model only */
-    unsigned long nonce;               /* next nonce this account must use */
+    unsigned long nonce;               /* next nonce to use */
     HistoryNode *history_head;
     HistoryNode *history_tail;
 } Account;
@@ -78,7 +71,7 @@ typedef struct {
 typedef struct {
     LedgerModel model;
 
-    Account *accounts;                 /* heap arrays, grown with realloc */
+    Account *accounts;                 /* heap arrays */
     int account_count;
     int account_capacity;
 
@@ -93,37 +86,27 @@ void ledger_init(Ledger *ledger, LedgerModel model);
 void ledger_free(Ledger *ledger);
 const char *ledger_model_name(LedgerModel model);
 
-/* Creates the account if it does not exist. Returns 0 if memory ran out. */
+/* Creates the account if missing; returns 0 if memory ran out. */
 int ledger_open_account(Ledger *ledger, const char *id);
 Account *ledger_find_account(Ledger *ledger, const char *id);
 long ledger_balance(const Ledger *ledger, const char *id);
 
-/*
- * Creates new tokens (a lending reward or a mining reward). fee is taken out of
- * gross before the recipient is credited. tx_id may be NULL to generate one.
- */
+/* Creates new tokens; fee is taken from gross, tx_id may be NULL. */
 int ledger_mint(Ledger *ledger, const char *tx_id, const char *recipient,
                 long gross, long fee, char *err, size_t err_size);
 
-/*
- * Builds a member-to-member transfer without applying it.
- * UTXO: picks the sender's outputs and adds a change output.
- * ACCOUNT: records the nonce the sender supplied.
- */
+/* Builds a transfer without applying it. */
 int ledger_build_transfer(Ledger *ledger, const char *sender, const char *recipient,
                           long amount, unsigned long nonce, Transaction *tx,
                           char *err, size_t err_size);
 
-/* Validates and applies a transfer. Rejects double spends, bad nonces and low balances. */
+/* Checks and applies a transfer; rejects double spends, bad nonces and low balances. */
 int ledger_submit(Ledger *ledger, const Transaction *tx, char *err, size_t err_size);
 
-/*
- * Fee-less service charge (the cloud rental): moves up to amount from payer to payee.
- * A balance can never go negative, so it returns what was actually paid.
- */
+/* Moves up to amount from payer to payee with no fee; returns what was paid. */
 long ledger_charge(Ledger *ledger, const char *payer, const char *payee, long amount);
 
-/* "12.50" style text for an amount in hundredths of a coin. */
+/* Amount as text, like "12.50". */
 const char *format_coins(long amount, char buf[32]);
 
 void ledger_print_balances(const Ledger *ledger);
